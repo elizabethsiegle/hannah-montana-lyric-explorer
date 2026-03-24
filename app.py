@@ -287,6 +287,17 @@ def wordcloud_img(text, era="All Songs"):
             return tuple(int(c * 255) for c in color)
 
     try:
+        # Debug: Add minimum word count check
+        if len(text.split()) < 5:
+            fig, ax = plt.subplots(figsize=(14, 3.7), facecolor="#FFFFFF")
+            ax.text(0.5, 0.5, f"Not enough words for wordcloud (only {len(text.split())} words)", 
+                    ha='center', va='center', fontsize=16, color='orange')
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis("off")
+            fig.tight_layout(pad=0)
+            return fig
+            
         wc = WordCloud(
             width=1600, height=420,
             background_color="#FFFFFF",
@@ -383,8 +394,13 @@ else:
         for w in clean_words(row["lyrics"])
     )
 
+# Debug: Check if text is empty
+if not wc_text.strip():
+    matching_songs = len(filtered[filtered["era"] == wc_choice]) if wc_choice != "All Songs" else len(filtered)
+    st.warning(f"No text found for {wc_choice}. Songs matched: {matching_songs}")
+
 wc_fig = wordcloud_img(wc_text, era=wc_choice)
-st.pyplot(wc_fig, width='stretch')
+st.pyplot(wc_fig, use_container_width=True)
 plt.close("all")
 
 rule()
