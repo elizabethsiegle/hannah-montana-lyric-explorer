@@ -34,7 +34,7 @@ Lyrics: {lyrics_snippet}
 
 response = client.chat.completions.create(
     messages=[{"role": "user", "content": prompt}],
-    model= "openai-gpt-oss-120b",
+    model= "anthropic-claude-4.6-sonnet",
     max_tokens=200,
 )
 
