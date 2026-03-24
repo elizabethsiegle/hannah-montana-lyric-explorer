@@ -6,5 +6,5 @@ plotly>=5.15.0
 wordcloud>=1.9.0
 nltk>=3.8.0
 python-dotenv>=1.0.0
-gradientai>=1.0.0
+gradient>=2.0.0
 lyricsgenius>=3.0.0
