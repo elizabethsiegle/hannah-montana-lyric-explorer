@@ -1,7 +1,5 @@
 import os
 import csv
-import ast
-import random
 from dotenv import load_dotenv
 from gradient import Gradient
 
@@ -11,31 +9,43 @@ client = Gradient(
     model_access_key=os.environ.get("MODEL_ACCESS_KEY"),
 )
 
-# ── Pick a random song from the CSV ──────────────────────────────────────────
+# ── Load all song titles from the CSV ────────────────────────────────────────
 songs = []
 with open("lyrics/hannah_montana_lyrics.csv", encoding="utf-8") as f:
     for row in csv.DictReader(f):
         if row["lyrics"].strip():
-            songs.append({"title": row["title"], "lyrics": row["lyrics"]})
+            songs.append(row["title"])
 
-song = random.choice(songs)
-# Trim to first ~800 words so we stay within context
-lyrics_snippet = " ".join(song["lyrics"].split()[:800])
+song_list = "\n".join(f"- {title}" for title in songs)
 
-print(f"Analyzing: {song['title']}\n{'─' * 50}")
+# ── Ask the user a few questions ─────────────────────────────────────────────
+print("Let's find your perfect Hannah Montana song!\n")
+feeling_now = input("How are you feeling right now? ")
+feeling_want = input("How do you want to feel? ")
+zodiac = input("What is your zodiac sign? ")
 
-# ── Analysis prompt ───────────────────────────────────────────────────────────
-prompt = f"""Analyze the following Hannah Montana song lyrics and provide insights on the themes, tone, and overall vibe of the song. Be concise but thorough in your analysis. Return only the analysis and no reasoning whatsoever. Do not think it through, just return the analysis. Do not return any text that is not part of the analysis.
+print("\n✨ Finding your song...\n")
 
-Song: "{song['title']}"
-Lyrics: {lyrics_snippet}
+# ── Recommendation prompt ─────────────────────────────────────────────────────
+prompt = f"""You are a Hannah Montana expert and music therapist. Based on the user's answers below, recommend exactly one Hannah Montana song from the list provided. Return only the song title, followed by a one-sentence explanation of why it fits.
 
+User answers:
+- How they're feeling now: {feeling_now}
+- How they want to feel: {feeling_want}
+- Zodiac sign: {zodiac}
+
+Available Hannah Montana songs:
+{song_list}
+
+Respond in this format:
+Song: <title>
+Why: <one sentence>
 """
 
 response = client.chat.completions.create(
     messages=[{"role": "user", "content": prompt}],
-    model= "anthropic-claude-4.6-sonnet",
-    max_tokens=200,
+    model="anthropic-claude-4.6-sonnet",
+    max_tokens=100,
 )
 
 msg = response.choices[0].message

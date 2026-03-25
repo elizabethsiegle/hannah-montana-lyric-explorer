@@ -13,8 +13,8 @@ A deep dive into 79 Hannah Montana songs spanning 2006-2010, with interactive vi
 ## Tech Stack
 
 - **Visualizations**: Plotly, Matplotlib, WordCloud
-- **Data**: 79+ songs from Genius API via lyricsgenius
-- **AI Reviews**: Nvidia Nemotron on DigitalOcean
+- **Data**: 79+ songs from [Genius API](https://docs.genius.com/) via lyricsgenius
+- **AI Reviews**: [Nvidia Nemotron](https://build.nvidia.com/nvidia/nemotron-3-super-120b) via [Gradient AI](https://gradient.ai/)
 - **Deployment**: [DigitalOcean App Platform](https://www.digitalocean.com/products/app-platform)
 
 The color palette and typography are inspired by the actual Hannah Montana branding from the mid-2000s.

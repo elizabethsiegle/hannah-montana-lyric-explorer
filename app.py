@@ -346,7 +346,7 @@ with st.sidebar:
     top_n = st.slider("Words shown in frequency chart", 10, 50, 30, step=5)
     st.markdown(
         '<p style="font-size:0.75rem;color:#7A6E66;margin-top:1.5rem">'
-        '79 songs · 2006–2010<br>Source: Genius Lyrics API</p>',
+        '79 songs · 2006–2011<br>Source: Genius Lyrics API</p>',
         unsafe_allow_html=True,
     )
 
@@ -400,7 +400,7 @@ if not wc_text.strip():
     st.warning(f"No text found for {wc_choice}. Songs matched: {matching_songs}")
 
 wc_fig = wordcloud_img(wc_text, era=wc_choice)
-st.pyplot(wc_fig, use_container_width=True)
+st.pyplot(wc_fig, width='stretch')
 plt.close("all")
 
 rule()
@@ -859,63 +859,88 @@ fig_hm.update_layout(
 )
 st.plotly_chart(fig_hm, width='stretch')
 
-# ── AI Critic ─────────────────────────────────────────────────────────────────
+# ── Song Recommender ──────────────────────────────────────────────────────────
 rule()
 section(
-    "AI critic",
-    "Get a song review",
-    "Powered by Nvidia Nemotron — picks apart any song in three punchy takes.",
+    "Song recommender",
+    "Find your song",
+    "Answer three quick questions and we'll match you to a Hannah Montana track.",
 )
 
-critic_song = st.selectbox(
-    "Song to review", options=df["title"].tolist(),
-    key="critic_song", label_visibility="collapsed",
-)
-
-col_btn, col_note = st.columns([1, 4])
-with col_btn:
-    run_analysis = st.button("Analyze ↗", type="primary")
-with col_note:
-    st.markdown(
-        f"<p style='font-size:0.8rem;color:{MUTED};margin-top:0.5rem'>"
-        "Vibe check · Hidden depth · 2006 vs. now</p>",
-        unsafe_allow_html=True,
+q_col1, q_col2, q_col3 = st.columns(3)
+with q_col1:
+    st.markdown(f"<p style='font-size:0.85rem;font-weight:600;color:{TEXT};margin-bottom:0.25rem'>How are you feeling right now?</p>", unsafe_allow_html=True)
+    feeling_now = st.text_input("feeling_now", placeholder="e.g. anxious, excited, meh…", label_visibility="collapsed", key="feeling_now")
+with q_col2:
+    st.markdown(f"<p style='font-size:0.85rem;font-weight:600;color:{TEXT};margin-bottom:0.25rem'>How do you want to feel?</p>", unsafe_allow_html=True)
+    feeling_want = st.text_input("feeling_want", placeholder="e.g. pumped up, at peace…", label_visibility="collapsed", key="feeling_want")
+with q_col3:
+    st.markdown(f"<p style='font-size:0.85rem;font-weight:600;color:{TEXT};margin-bottom:0.25rem'>What's your zodiac sign?</p>", unsafe_allow_html=True)
+    zodiac = st.selectbox(
+        "zodiac",
+        ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+         "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"],
+        label_visibility="collapsed", key="zodiac",
     )
 
-if run_analysis:
-    song_row_ai = df[df["title"] == critic_song].iloc[0]
-    lyrics_snippet = " ".join(song_row_ai["lyrics"].split()[:800])
-    prompt = (
-        f'You are a sharp, witty music critic for a pop culture magazine. '
-        f'Analyze "{critic_song}" by Hannah Montana in exactly 3 sections. '
-        f'Each section is ONE sentence only. Total response must be under 90 words. '
-        f'No preamble, no sign-off — just the three labeled sections.\n\n'
-        f'**Vibe check:** [one sentence on mood and energy]\n'
-        f'**Hidden depth:** [one sentence on something surprising most listeners miss]\n'
-        f'**2006 vs. now:** [one sentence on how the themes hit differently in 2026]\n\n'
-        f'Be specific to these lyrics — not generic. Punchy and fun.\n\n'
-        f'Lyrics:\n{lyrics_snippet}'
-    )
-    with st.spinner(f'Analyzing "{critic_song}"…'):
-        client = Gradient(model_access_key=os.environ.get("MODEL_ACCESS_KEY"))
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="nvidia-nemotron-3-super-120b",
-            max_tokens=500,
+rec_btn_col, _ = st.columns([1, 4])
+with rec_btn_col:
+    run_rec = st.button("Recommend a song ↗", type="primary", key="run_rec")
+
+if run_rec:
+    if not feeling_now.strip() or not feeling_want.strip():
+        st.warning("Please answer the first two questions before getting a recommendation.")
+    else:
+        song_titles = "\n".join(f"- {t}" for t in df["title"].tolist())
+        rec_prompt = (
+            f"You are a Hannah Montana expert and music therapist. "
+            f"Based on the user's answers, recommend exactly one Hannah Montana song from the list below.\n\n"
+            f"User answers:\n"
+            f"- How they're feeling now: {feeling_now}\n"
+            f"- How they want to feel: {feeling_want}\n"
+            f"- Zodiac sign: {zodiac}\n\n"
+            f"Available songs:\n{song_titles}\n\n"
+            f"Respond in exactly this format — nothing else:\n"
+            f"Song: <title>\n"
+            f"Why: <one sentence>\n"
         )
-    msg = response.choices[0].message
-    review = msg.content or msg.reasoning_content
-    st.markdown(
-        f"<div style='background:{CARD_BG};border:1px solid {BORDER};border-radius:4px;"
-        f"padding:1.4rem 1.6rem;margin-top:0.5rem;line-height:1.8'>{review}</div>",
-        unsafe_allow_html=True,
-    )
+        with st.spinner("Finding your song…"):
+            try:
+                api_key = os.environ.get("MODEL_ACCESS_KEY")
+                if not api_key:
+                    st.error("MODEL_ACCESS_KEY environment variable is not set.")
+                else:
+                    rec_client = Gradient(model_access_key=api_key)
+                    rec_response = rec_client.chat.completions.create(
+                        messages=[{"role": "user", "content": rec_prompt}],
+                        model="anthropic-claude-4.6-sonnet",
+                        max_tokens=100,
+                    )
+                    rec_msg = rec_response.choices[0].message
+                    rec_text = rec_msg.content or rec_msg.reasoning_content
+
+                    # Parse out title and reason
+                    rec_lines = {line.split(":", 1)[0].strip(): line.split(":", 1)[1].strip()
+                                 for line in rec_text.strip().splitlines() if ":" in line}
+                    rec_title = rec_lines.get("Song", "")
+                    rec_why = rec_lines.get("Why", rec_text)
+
+                    st.markdown(
+                        f"<div style='background:{CARD_BG};border:1px solid {BORDER};border-radius:4px;"
+                        f"padding:1.4rem 1.6rem;margin-top:0.75rem;line-height:1.8'>"
+                        f"<p style='font-size:1.15rem;font-weight:700;color:{MAGENTA};margin:0 0 0.4rem'>🎵 {rec_title}</p>"
+                        f"<p style='margin:0;color:{TEXT}'>{rec_why}</p>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+            except Exception as e:
+                st.error(f"Error getting recommendation: {str(e)}")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown(
     f'<hr class="rule">'
     f'<p style="font-size:0.75rem;color:{MUTED}">'
     f"Lyrics sourced from the Genius API via lyricsgenius. "
-    f"79 songs · Hannah Montana (2006–2010).</p>",
+    f"79 songs · Hannah Montana (2006–2011).</p>",
     unsafe_allow_html=True,
 )
