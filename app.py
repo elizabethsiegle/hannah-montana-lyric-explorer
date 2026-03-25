@@ -146,6 +146,31 @@ st.markdown("""
   /* Era legend dot */
   .era-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 
+  /* Sticky footer */
+  .sticky-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background: #FFFFFF;
+    border-top: 1px solid #E5DDD4;
+    padding: 0.55rem 1.5rem;
+    font-size: 0.75rem;
+    color: #7A6E66;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    box-sizing: border-box;
+  }
+  .sticky-footer a {
+    color: #C8005A;
+    text-decoration: none;
+    font-weight: 500;
+  }
+  .sticky-footer a:hover { text-decoration: underline; }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -942,5 +967,15 @@ st.markdown(
     f'<p style="font-size:0.75rem;color:{MUTED}">'
     f"Lyrics sourced from the Genius API via lyricsgenius. "
     f"79 songs · Hannah Montana (2006–2011).</p>",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="sticky-footer">'
+    'made w/ ♥ in sf &nbsp;·&nbsp; github repo: '
+    '<a href="https://github.com/elizabethsiegle/hannah-montana-lyric-explorer" target="_blank" rel="noopener">'
+    'hannah-montana-lyric-explorer'
+    '</a>'
+    '</div>',
     unsafe_allow_html=True,
 )
