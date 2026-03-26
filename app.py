@@ -14,7 +14,9 @@ import streamlit as st
 from wordcloud import WordCloud
 import nltk
 nltk.download("stopwords", quiet=True)
+nltk.download("vader_lexicon", quiet=True)
 from nltk.corpus import stopwords
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 from gradient import Gradient
 
@@ -171,6 +173,33 @@ st.markdown("""
   }
   .sticky-footer a:hover { text-decoration: underline; }
 
+  /* Era tabs — make them visible against the cream background */
+  [data-testid="stTabs"] [role="tablist"] {
+    gap: 0.4rem;
+    border-bottom: 2px solid #E5DDD4;
+  }
+  [data-testid="stTabs"] button[role="tab"] {
+    background: #FFFFFF !important;
+    border: 1px solid #E5DDD4 !important;
+    border-bottom: none !important;
+    border-radius: 4px 4px 0 0 !important;
+    color: #7A6E66 !important;
+    font-size: 0.8rem !important;
+    font-weight: 500 !important;
+    padding: 0.35rem 0.9rem !important;
+  }
+  [data-testid="stTabs"] button[role="tab"]:hover {
+    background: #F0EAE2 !important;
+    color: #1A1612 !important;
+  }
+  [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    background: #FFFFFF !important;
+    border-color: #1A1612 !important;
+    color: #1A1612 !important;
+    font-weight: 600 !important;
+    border-bottom: 2px solid #FFFFFF !important;
+  }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -235,7 +264,7 @@ def load_songs():
                 era = "Season 2"
             elif "Movie" in album_name:
                 era = "The Movie"
-            elif "Remixed" in album_name or "Collection" in album_name or "Best of" in album_name or "Holiday" in album_name:
+            elif "Remixed" in album_name or "Collection" in album_name or "Best of" in album_name or "Holiday" in album_name or "Anniversary" in album_name:
                 era = "Compilations"
             else:
                 era = "Season 1"
@@ -272,6 +301,50 @@ def compute_word_data(df):
     for _, row in df.iterrows():
         all_words.extend(clean_words(row["lyrics"]))
     return Counter(all_words)
+
+@st.cache_data
+def compute_yx_spotlight(df):
+    """Compare 'Younger You' to the rest of the catalog."""
+    sia = SentimentIntensityAnalyzer()
+    yx = df[df["title"] == "Younger You"]
+    if yx.empty:
+        return None
+    yx_row = yx.iloc[0]
+    catalog = df[df["title"] != "Younger You"]
+
+    # Word count
+    yx_wc = yx_row["word_count"]
+    avg_wc = catalog["word_count"].mean()
+    wc_delta = round((yx_wc - avg_wc) / avg_wc * 100)
+
+    # Average VADER compound per song
+    def avg_sent(lyrics):
+        lines = [l.strip() for l in lyrics.splitlines() if l.strip()]
+        if not lines:
+            return 0.0
+        return sum(sia.polarity_scores(l)["compound"] for l in lines) / len(lines)
+
+    yx_sent = round(avg_sent(yx_row["lyrics"]), 2)
+    cat_sent = round(catalog["lyrics"].apply(avg_sent).mean(), 2)
+
+    # Signature words exclusive to "Younger You"
+    all_counts_full = Counter(
+        w for _, r in df.iterrows() for w in clean_words(r["lyrics"])
+    )
+    yx_words = clean_words(yx_row["lyrics"])
+    yx_freq = Counter(yx_words)
+    scores = {w: yx_freq[w] / (all_counts_full[w] + 1) for w in yx_freq}
+    top_words = sorted(scores, key=scores.get, reverse=True)[:6]
+
+    return {
+        "yx_wc": yx_wc,
+        "avg_wc": int(avg_wc),
+        "wc_delta": wc_delta,
+        "yx_sent": yx_sent,
+        "cat_sent": cat_sent,
+        "top_words": top_words,
+        "release": yx_row["release_date"],
+    }
 
 @st.cache_data
 def wordcloud_img(text, era="All Songs"):
@@ -371,7 +444,7 @@ with st.sidebar:
     top_n = st.slider("Words shown in frequency chart", 10, 50, 30, step=5)
     st.markdown(
         '<p style="font-size:0.75rem;color:#7A6E66;margin-top:1.5rem">'
-        '79 songs · 2006–2011<br>Source: Genius Lyrics API</p>',
+        '80 songs · 2006–2026<br>Source: Genius Lyrics API</p>',
         unsafe_allow_html=True,
     )
 
@@ -384,7 +457,7 @@ st.markdown(
     "text-transform:uppercase;color:#C8005A;margin-bottom:0.5rem'>20th Anniversary · 2006–2026</p>"
     "<p class='display-title'>Hannah Montana</p>"
     "<p class='display-title' style='font-style:italic;font-weight:400'>in her own words</p>"
-    "<p class='display-sub'>A lyrical deep-dive into 79 songs from the Best of Both Worlds</p>"
+    "<p class='display-sub'>A lyrical deep-dive into 80 songs from the Best of Both Worlds</p>"
     "</div>",
     unsafe_allow_html=True,
 )
@@ -402,6 +475,68 @@ kpi_html = '<div class="kpi-row">' + "".join(
     for v, l in kpis
 ) + "</div>"
 st.markdown(kpi_html, unsafe_allow_html=True)
+
+# ── "Younger You" spotlight banner ────────────────────────────────────────────
+_sp = compute_yx_spotlight(df)
+if _sp:
+    _wc_sign = f"+{_sp['wc_delta']}%" if _sp['wc_delta'] >= 0 else f"{_sp['wc_delta']}%"
+    _sent_delta = round(_sp['yx_sent'] - _sp['cat_sent'], 2)
+    _sent_sign = f"+{_sent_delta:.2f}" if _sent_delta >= 0 else f"{_sent_delta:.2f}"
+    _words_html = "  ".join(
+        f"<span style='background:#FDE8F0;color:{MAGENTA};border-radius:3px;"
+        f"padding:0.1rem 0.45rem;font-size:0.75rem;font-weight:500'>{w}</span>"
+        for w in _sp["top_words"]
+    )
+    st.markdown(
+        f"""
+        <div style='margin:1.6rem 0 0.4rem;border-left:4px solid {MAGENTA};
+                    background:#FFF7FA;border-radius:0 6px 6px 0;
+                    padding:1rem 1.4rem 1.1rem;'>
+          <div style='display:flex;align-items:center;gap:0.6rem;margin-bottom:0.55rem'>
+            <span style='background:{MAGENTA};color:#fff;font-size:0.65rem;font-weight:700;
+                         letter-spacing:0.1em;text-transform:uppercase;
+                         border-radius:3px;padding:0.15rem 0.5rem'>New</span>
+            <span style='font-family:"Playfair Display",Georgia,serif;font-size:1.1rem;
+                         font-weight:700;color:{TEXT}'>"Younger You"</span>
+            <span style='font-size:0.8rem;color:{MUTED}'>— Hannah Montana 20th Anniversary Special · {_sp["release"]}</span>
+          </div>
+          <div style='display:flex;gap:2.5rem;flex-wrap:wrap;margin-bottom:0.75rem'>
+            <div>
+              <div style='font-size:1.3rem;font-weight:700;font-family:"Playfair Display",serif;
+                           color:{TEXT}'>{_sp["yx_wc"]}</div>
+              <div style='font-size:0.7rem;color:{MUTED};text-transform:uppercase;
+                           letter-spacing:0.06em'>words in this song
+                <span style='color:{MAGENTA};margin-left:0.3rem;font-weight:600'>{_wc_sign} vs avg across all 79 other songs ({_sp["avg_wc"]})</span>
+              </div>
+            </div>
+            <div>
+              <div style='font-size:1.3rem;font-weight:700;font-family:"Playfair Display",serif;
+                           color:{TEXT}'>{_sp["yx_sent"]:+.2f}</div>
+              <div style='font-size:0.7rem;color:{MUTED};text-transform:uppercase;
+                           letter-spacing:0.06em'>avg sentiment per line
+                <span style='color:{MAGENTA};margin-left:0.3rem;font-weight:600'>{_sent_sign} vs avg across all 79 other songs ({_sp["cat_sent"]:+.2f})</span>
+              </div>
+            </div>
+          </div>
+          <div style='font-size:0.72rem;color:{MUTED};margin-bottom:0.4rem;
+                       text-transform:uppercase;letter-spacing:0.08em'>
+            Signature words
+          </div>
+          {_words_html}
+          <p style='font-size:0.72rem;color:{MUTED};line-height:1.6;margin:0.85rem 0 0'>
+            Sentiment is scored with <a href='https://github.com/cjhutto/vaderSentiment'
+            style='color:{MAGENTA}'>VADER</a> (Valence Aware Dictionary and sEntiment Reasoner),
+            a lexicon-based tool built specifically for expressive, short-form text — the same kind
+            of language you find in song lyrics. Each word in its dictionary carries a pre-rated
+            sentiment score; VADER combines those scores and adjusts for capitalization, punctuation,
+            and intensifiers to produce a compound value between −1 (most negative) and +1 (most
+            positive). Lyrics were fetched from <a href='https://genius.com' style='color:{MAGENTA}'>Genius</a>
+            via their public API, so scores reflect the raw, unedited song text.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 rule()
 
@@ -427,6 +562,13 @@ if not wc_text.strip():
 wc_fig = wordcloud_img(wc_text, era=wc_choice)
 st.pyplot(wc_fig, width='stretch')
 plt.close("all")
+st.markdown(
+    f"<p style='font-size:0.72rem;color:{MUTED}'>"
+    f"Common words (I, you, the, and, etc.) are filtered out as stopwords so more "
+    f"meaningful lyrical words surface. To see a word like <em>you</em> here, it would "
+    f"need to appear far more than average across all songs.</p>",
+    unsafe_allow_html=True,
+)
 
 rule()
 
@@ -500,6 +642,15 @@ with col_right:
         )],
     )
     st.plotly_chart(fig_donut, width='stretch')
+
+    st.markdown(
+        f"<p style='font-size:0.72rem;color:{MUTED};margin:0.2rem 0 0.8rem'>"
+        f"<strong style='color:{TEXT}'>Compilations</strong> includes remixed albums, "
+        f"holiday releases, Best of collections, and the "
+        f"<strong style='color:{TEXT}'>20th Anniversary Special</strong> "
+        f"(2026) — songs that don't belong to a specific season.</p>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         "<p style='font-size:0.75rem;font-weight:600;letter-spacing:0.1em;"
@@ -884,6 +1035,93 @@ fig_hm.update_layout(
 )
 st.plotly_chart(fig_hm, width='stretch')
 
+# ── Younger You — Sentiment Arc ───────────────────────────────────────────────
+rule()
+section(
+    "20th Anniversary · 2026",
+    "Younger You — emotional arc",
+    "Line-by-line sentiment through the new song, scored with VADER.",
+)
+
+_sia = SentimentIntensityAnalyzer()
+
+_younger_you_row = df[df["title"] == "Younger You"]
+if not _younger_you_row.empty:
+    _lyrics = _younger_you_row.iloc[0]["lyrics"]
+    _lines = [l.strip() for l in _lyrics.splitlines() if l.strip()]
+    _scores = [_sia.polarity_scores(l)["compound"] for l in _lines]
+
+    # Smooth with a rolling average (window=3)
+    _smoothed = pd.Series(_scores).rolling(3, center=True, min_periods=1).mean().tolist()
+
+    _line_nums = list(range(1, len(_lines) + 1))
+
+    # Colour each point by positive / negative
+    _point_colors = [MAGENTA if s >= 0 else AMBER for s in _smoothed]
+
+    fig_yx = go.Figure()
+
+    # Filled area
+    fig_yx.add_trace(go.Scatter(
+        x=_line_nums,
+        y=_smoothed,
+        mode="lines",
+        line=dict(color=MAGENTA, width=2.5),
+        fill="tozeroy",
+        fillcolor="rgba(200,0,90,0.08)",
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
+    # Dots with line text on hover
+    fig_yx.add_trace(go.Scatter(
+        x=_line_nums,
+        y=_smoothed,
+        mode="markers",
+        marker=dict(color=_point_colors, size=8, line=dict(color="#fff", width=1.5)),
+        customdata=_lines,
+        hovertemplate="<i>%{customdata}</i><br>sentiment: %{y:.2f}<extra></extra>",
+        showlegend=False,
+    ))
+
+    # Zero baseline
+    fig_yx.add_hline(y=0, line_color=BORDER, line_width=1)
+
+    # Annotate the most positive and most negative lines
+    _max_i = int(pd.Series(_smoothed).idxmax())
+    _min_i = int(pd.Series(_smoothed).idxmin())
+    for _i, _label, _ay in [(_max_i, "most hopeful", -40), (_min_i, "most wistful", 40)]:
+        fig_yx.add_annotation(
+            x=_line_nums[_i], y=_smoothed[_i],
+            text=f"<b>{_label}</b>",
+            showarrow=True, arrowhead=2, arrowcolor=MUTED,
+            ay=_ay, ax=0,
+            font=dict(size=9, color=MUTED),
+        )
+
+    fig_yx.update_layout(
+        **chart_layout(height=340, margin=dict(l=10, r=10, t=10, b=40)),
+        xaxis=dict(
+            title="line", tickfont=dict(size=9), showgrid=False,
+            linecolor=BORDER, zeroline=False,
+        ),
+        yaxis=dict(
+            title="sentiment", tickfont=dict(size=9),
+            range=[-1.05, 1.05], gridcolor=GRID_COL, zeroline=False,
+            tickvals=[-1, -0.5, 0, 0.5, 1],
+            ticktext=["−1 negative", "−0.5", "0 neutral", "+0.5", "+1 positive"],
+        ),
+    )
+    st.plotly_chart(fig_yx, width='stretch')
+    st.markdown(
+        f"<p style='font-size:0.72rem;color:{MUTED}'>"
+        f"Each point is one lyric line. The curve is a 3-line rolling average. "
+        f"<span style='color:{MAGENTA}'>●</span> positive &nbsp;·&nbsp; "
+        f"<span style='color:{AMBER}'>●</span> negative. "
+        f"Hover a dot to read the line.</p>",
+        unsafe_allow_html=True,
+    )
+
 # ── Song Recommender ──────────────────────────────────────────────────────────
 rule()
 section(
@@ -966,13 +1204,13 @@ st.markdown(
     f'<hr class="rule">'
     f'<p style="font-size:0.75rem;color:{MUTED}">'
     f"Lyrics sourced from the Genius API via lyricsgenius. "
-    f"79 songs · Hannah Montana (2006–2011).</p>",
+    f"80 songs · Hannah Montana (2006–2026).</p>",
     unsafe_allow_html=True,
 )
 
 st.markdown(
     '<div class="sticky-footer">'
-    'made w/ ♥ in sf &nbsp;·&nbsp; github repo: '
+    'made w/ ♥ in sf🌉 &nbsp;·&nbsp; github repo: '
     '<a href="https://github.com/elizabethsiegle/hannah-montana-lyric-explorer" target="_blank" rel="noopener">'
     'hannah-montana-lyric-explorer'
     '</a>'
