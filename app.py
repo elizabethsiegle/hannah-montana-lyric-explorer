@@ -19,6 +19,7 @@ from nltk.corpus import stopwords
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 from gradient import Gradient
+from exa_py import Exa
 
 load_dotenv()
 
@@ -423,6 +424,193 @@ def wordcloud_img(text, era="All Songs"):
         ax.axis("off")
         fig.tight_layout(pad=0)
         return fig
+
+
+_BOILERPLATE_MARKERS = [
+    "sign in", "register", "skip to content", "skip to main", "advertisement",
+    "don't have an account", "table of contents", "edit source", "navigation menu",
+    "retrieved from", "categories :", "this page was last",
+]
+
+def _clean_content(txt: str) -> str:
+    """Strip nav/boilerplate lines from crawled page text."""
+    lines = []
+    for line in txt.splitlines():
+        stripped = line.strip()
+        if len(stripped) < 40:
+            continue
+        lower = stripped.lower()
+        if any(marker in lower for marker in _BOILERPLATE_MARKERS):
+            continue
+        # Skip lines that are mostly markdown links or HTML entities
+        if stripped.count("](http") > 1 or stripped.count("&amp;") > 2:
+            continue
+        lines.append(stripped)
+    return " ".join(lines)
+
+
+@st.cache_data(show_spinner=False)
+def fetch_song_facts(song_title: str, release_year: str, album: str = "", lyrics: str = "") -> dict:
+    """Use Exa to fetch content from music sites, then Claude to synthesize facts."""
+    exa_key = os.environ.get("EXA_API_KEY", "")
+    gradient_key = os.environ.get("MODEL_ACCESS_KEY", "")
+    if not exa_key:
+        return {"facts": None, "sources": [], "pop_context": [], "error": "No EXA_API_KEY"}
+    try:
+        exa_client = Exa(api_key=exa_key)
+
+        # Build a disambiguating query using album when available
+        album_hint = f' "{album}"' if album else ""
+        query = f'"{song_title}" Hannah Montana{album_hint} song'
+
+        song_res = exa_client.search_and_contents(
+            query,
+            num_results=6,
+            type="neural",
+            include_domains=[
+                "en.wikipedia.org", "hannahmontana.fandom.com",
+                "allmusic.com", "discogs.com",
+            ],
+            text={"max_characters": 1500},
+        )
+
+        content_pieces, sources = [], []
+        seen_urls = set()
+        for r in song_res.results:
+            cleaned = _clean_content(r.text or "")
+            if cleaned and len(cleaned) > 120 and r.url not in seen_urls:
+                content_pieces.append(cleaned)
+                sources.append({"title": r.title or r.url, "url": r.url})
+                seen_urls.add(r.url)
+
+        # Fall back to broader search if we don't have enough substance
+        if len(content_pieces) < 2:
+            broad_res = exa_client.search_and_contents(
+                f'Hannah Montana "{song_title}"{album_hint}',
+                num_results=5,
+                type="neural",
+                text={"max_characters": 1500},
+            )
+            for r in broad_res.results:
+                cleaned = _clean_content(r.text or "")
+                if cleaned and len(cleaned) > 120 and r.url not in seen_urls:
+                    content_pieces.append(cleaned)
+                    sources.append({"title": r.title or r.url, "url": r.url})
+                    seen_urls.add(r.url)
+
+        # Determine whether web content actually mentions this song by name
+        title_lower = song_title.lower()
+        relevant_pieces = [p for p in content_pieces if title_lower in p.lower()]
+
+        # Claude synthesizes facts — from web content if available, lyrics if not
+        facts_text = None
+        claude_prompt = None
+        if relevant_pieces:
+            combined = "\n\n---\n\n".join(relevant_pieces[:3])
+            claude_prompt = (
+                f"You are a Hannah Montana music expert. Using ONLY the web content below about "
+                f'the song "{song_title}", output exactly 3 bullet points.\n'
+                f"Rules:\n"
+                f"- No preamble, no intro, no numbering\n"
+                f"- Start immediately with the first bullet using • as the symbol\n"
+                f"- Each bullet is ONE specific sentence with concrete detail: "
+                f"a real date, chart position, episode name/number, album name, "
+                f"songwriter credit, or notable chart/cultural fact\n"
+                f"- Do NOT write vague sentences like 'this song was popular' or "
+                f"'it was featured on the show' — every bullet must contain a specific fact\n"
+                f"- Do not invent anything not explicitly stated in the content below\n\n"
+                f"Content:\n{combined}"
+            )
+        elif lyrics:
+            # New or obscure song with no web coverage — analyse the lyrics directly
+            claude_prompt = (
+                f"You are a Hannah Montana music expert analyzing \"{song_title}\" "
+                f"({album}, {release_year}). "
+                f"The full lyrics are below. Output exactly 3 bullet points.\n"
+                f"Rules:\n"
+                f"- No preamble, no intro, no numbering\n"
+                f"- Start immediately with the first bullet using • as the symbol\n"
+                f"- Each bullet is ONE specific sentence highlighting something interesting "
+                f"about the lyrics: a recurring image or motif, an emotional arc, "
+                f"a specific line that captures the song's theme, or a lyrical technique\n"
+                f"- Quote specific lines from the lyrics where possible\n\n"
+                f"Lyrics:\n{lyrics[:2000]}"
+            )
+            sources = [{"title": "Lyrics analysis", "url": ""}]
+
+        if claude_prompt and gradient_key:
+            try:
+                gc = Gradient(model_access_key=gradient_key)
+                resp = gc.chat.completions.create(
+                    messages=[{"role": "user", "content": claude_prompt}],
+                    model="anthropic-claude-4.6-sonnet",
+                    max_tokens=350,
+                )
+                msg = resp.choices[0].message
+                facts_text = (msg.content or msg.reasoning_content or "").strip()
+            except Exception:
+                facts_text = relevant_pieces[0][:500] if relevant_pieces else None
+
+        # Fetch pop-culture context via Wikipedia's "[year] in music" article
+        pop_items = []
+        if release_year and release_year.isdigit():
+            pop_res = exa_client.search_and_contents(
+                f"{release_year} in music",
+                num_results=3,
+                type="neural",
+                include_domains=["en.wikipedia.org"],
+                text={"max_characters": 1200},
+            )
+            for r in pop_res.results:
+                txt = (r.text or "").strip()
+                if txt and len(txt) > 120 and release_year in (r.title or ""):
+                    # Extract a clean paragraph — skip nav/table-of-contents noise at the top
+                    lines = [l.strip() for l in txt.splitlines() if len(l.strip()) > 60]
+                    excerpt = " ".join(lines[:4])
+                    # Trim to last complete sentence
+                    last_stop = max(excerpt.rfind(". "), excerpt.rfind(".\n"))
+                    excerpt = excerpt[: last_stop + 1].strip() if last_stop > 60 else excerpt[:400]
+                    if excerpt:
+                        pop_items.append({
+                            "title": r.title or r.url,
+                            "url": r.url,
+                            "snippet": excerpt,
+                        })
+
+        # Fetch press & fan coverage — open search so we catch whoever actually has the story
+        news_items = []
+        news_res = exa_client.search_and_contents(
+            f'"{song_title}" Hannah Montana Miley Cyrus',
+            num_results=6,
+            type="neural",
+            text={"max_characters": 1500},
+        )
+        for r in news_res.results:
+            txt = _clean_content(r.text or "")
+            r_title_lower = (r.title or "").lower()
+            # Must mention the song title explicitly
+            if not (title_lower in txt.lower() or title_lower in r_title_lower):
+                continue
+            if len(txt) < 80:
+                continue
+            last_stop = max(txt.rfind(". "), txt.rfind(".\n"))
+            snippet = txt[: last_stop + 1].strip() if last_stop > 60 else txt[:500]
+            news_items.append({
+                "title": r.title or r.url,
+                "url": r.url,
+                "snippet": snippet,
+                "published": (r.published_date or "")[:10],
+            })
+
+        return {
+            "facts": facts_text,
+            "sources": sources[:2],
+            "pop_context": pop_items,
+            "news": news_items,
+            "year": release_year,
+        }
+    except Exception as exc:
+        return {"facts": None, "sources": [], "pop_context": [], "news": [], "error": str(exc)}
 
 
 df = load_songs()
@@ -864,6 +1052,145 @@ with col2:
         f"{'…' if len(song_row['lyrics']) > 3000 else ''}</div>",
         unsafe_allow_html=True,
     )
+
+rule()
+
+# ── Song Facts (Exa + Claude) ─────────────────────────────────────────────────
+section(
+    "Song facts",
+    "Look up any song",
+    "Pick a song — Exa pulls from Songfacts, Wikipedia & Genius, Claude distills the highlights.",
+)
+
+_sf_pick_col, _sf_btn_col, _ = st.columns([3, 1, 2])
+with _sf_pick_col:
+    _facts_song = st.selectbox(
+        "facts_song",
+        options=df["title"].tolist(),
+        label_visibility="collapsed",
+        key="facts_song_select",
+    )
+with _sf_btn_col:
+    _run_facts = st.button("Research ↗", type="primary", key="run_facts")
+
+if _run_facts:
+    _facts_row = df[df["title"] == _facts_song].iloc[0]
+    _year_match = re.search(r"\b(19|20)\d{2}\b", str(_facts_row["release_date"] or ""))
+    _facts_year = _year_match.group(0) if _year_match else ""
+
+    with st.spinner(f"Researching \"{_facts_song}\"…"):
+        _facts_album = str(_facts_row.get("album", "") or "")
+        _facts_lyrics = str(_facts_row.get("lyrics", "") or "")
+        _facts_data = fetch_song_facts(_facts_song, _facts_year, _facts_album, _facts_lyrics)
+
+    if _facts_data.get("error"):
+        st.warning(f"Research unavailable: {_facts_data['error']}")
+    else:
+        _sf_col1, _sf_col2 = st.columns([3, 2])
+
+        with _sf_col1:
+            st.markdown(
+                f"<p style='font-size:0.78rem;font-weight:600;text-transform:uppercase;"
+                f"letter-spacing:0.08em;color:{MUTED};margin-bottom:0.8rem'>Did you know?</p>",
+                unsafe_allow_html=True,
+            )
+            if _facts_data.get("facts"):
+                _bullet_lines = [
+                    l.strip() for l in _facts_data["facts"].splitlines()
+                    if l.strip() and len(l.strip()) > 10
+                ]
+                for _bl in _bullet_lines:
+                    _bl_clean = _bl.lstrip("•·-– ").strip()
+                    st.markdown(
+                        f"<div style='display:flex;gap:0.7rem;align-items:flex-start;"
+                        f"margin-bottom:0.65rem'>"
+                        f"<span style='color:{MAGENTA};font-size:1.1rem;line-height:1.4'>★</span>"
+                        f"<p style='font-size:0.88rem;color:{TEXT};margin:0;line-height:1.6'>{_bl_clean}</p>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                if _facts_data.get("sources"):
+                    _src_parts = []
+                    for _s in _facts_data["sources"]:
+                        _s_url = _s.get("url", "")
+                        _s_parts = _s_url.split("/")
+                        _s_domain = _s_parts[2] if len(_s_parts) > 2 else _s.get("title", "source")
+                        if _s_url:
+                            _src_parts.append(
+                                f"<a href='{_s_url}' target='_blank' "
+                                f"style='color:{MUTED};font-size:0.7rem'>{_s_domain}</a>"
+                            )
+                        else:
+                            _src_parts.append(
+                                f"<span style='color:{MUTED};font-size:0.7rem'>{_s_domain}</span>"
+                            )
+                    st.markdown(
+                        f"<p style='margin-top:0.5rem;color:{MUTED};font-size:0.7rem'>"
+                        f"Sources: {' · '.join(_src_parts)}</p>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    f"<p style='font-size:0.85rem;color:{MUTED}'>No facts found for this song.</p>",
+                    unsafe_allow_html=True,
+                )
+
+        with _sf_col2:
+            # News panel — shown when Vice/Billboard/Yahoo/Reddit have coverage
+            _news = _facts_data.get("news", [])
+            if _news:
+                st.markdown(
+                    f"<p style='font-size:0.78rem;font-weight:600;text-transform:uppercase;"
+                    f"letter-spacing:0.08em;color:{MUTED};margin-bottom:0.8rem'>In the press &amp; online</p>",
+                    unsafe_allow_html=True,
+                )
+                for _ni in _news:
+                    _ni_domain = _ni["url"].split("/")[2] if _ni.get("url") else ""
+                    _ni_date = f" · {_ni['published']}" if _ni.get("published") else ""
+                    st.markdown(
+                        f"<div style='background:{CARD_BG};border:1px solid {BORDER};"
+                        f"border-radius:4px;padding:0.75rem 1rem;margin-bottom:0.5rem'>"
+                        f"<a href='{_ni['url']}' target='_blank' style='font-size:0.85rem;"
+                        f"font-weight:600;color:{MAGENTA};text-decoration:none;line-height:1.4;"
+                        f"display:block;margin-bottom:0.2rem'>{_ni['title']}</a>"
+                        f"<p style='font-size:0.7rem;color:{MUTED};margin:0 0 0.35rem'>"
+                        f"{_ni_domain}{_ni_date}</p>"
+                        f"<p style='font-size:0.82rem;color:{TEXT};margin:0;line-height:1.55'>"
+                        f"{_ni['snippet']}</p>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            # Pop context — shown when no news, or as fallback below news
+            if not _news and _facts_year:
+                st.markdown(
+                    f"<p style='font-size:0.78rem;font-weight:600;text-transform:uppercase;"
+                    f"letter-spacing:0.08em;color:{MUTED};margin-bottom:0.8rem'>Pop in {_facts_year}</p>",
+                    unsafe_allow_html=True,
+                )
+                if _facts_data.get("pop_context"):
+                    for _pc in _facts_data["pop_context"]:
+                        _pc_domain = _pc["url"].split("/")[2] if _pc.get("url") else ""
+                        _raw = _pc["snippet"]
+                        _last_stop = max(_raw.rfind(". "), _raw.rfind(".\n"))
+                        _pc_text = _raw[: _last_stop + 1].strip() if _last_stop > 60 else _raw
+                        st.markdown(
+                            f"<div style='background:{CARD_BG};border:1px solid {BORDER};"
+                            f"border-radius:4px;padding:0.75rem 1rem;margin-bottom:0.5rem'>"
+                            f"<a href='{_pc['url']}' target='_blank' style='font-size:0.85rem;"
+                            f"font-weight:600;color:{MAGENTA};text-decoration:none;line-height:1.4;"
+                            f"display:block;margin-bottom:0.2rem'>{_pc['title']}</a>"
+                            f"<p style='font-size:0.7rem;color:{MUTED};margin:0 0 0.35rem'>{_pc_domain}</p>"
+                            f"<p style='font-size:0.82rem;color:{TEXT};margin:0;line-height:1.55'>"
+                            f"{_pc_text}</p>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.markdown(
+                        f"<p style='font-size:0.85rem;color:{MUTED}'>No context found for {_facts_year}.</p>",
+                        unsafe_allow_html=True,
+                    )
 
 rule()
 
