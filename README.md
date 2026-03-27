@@ -28,6 +28,12 @@ streamlit run app.py
 
 You'll need API keys for Genius (lyrics) and Gradient AI (song reviews) in your `.env` file.
 
+You can add those in the console when you deploy to DigitalOcean App Platform. 
+Your build commands there are also
+```pip install -r requirements.txt
+streamlit run app.py
+```
+
 ## Data Notes
 
 Songs are categorized into eras: Season 1, Season 2, Season 3, The Movie, Season 4 – Forever, and Compilations. The word analysis filters out common stopwords and focuses on meaningful lyrics that capture Hannah's themes of fame, friendship, and growing up.
